@@ -1,0 +1,15 @@
+Build a series of contracts that implement an orderbook (if you are not familiar with orderbooks, read https://www.investopedia.com/terms/o/order-book.asp) that supports any token. For simplicity of the problem, let's use a fake USDC as the currency (so you have unlimited supply in tests).
+
+1. To simply the problem, let's only worry about the limit orders for now. So each order is either a bid (offer to buy certain amount of a custom token at or below a preset price) or an ask (offer to sell certain amount of a custom token at or above a preset price). Each order should include these fields: market(most likely an uint or string that points to a market e.g. ETH/USDC or MATIC/USDC. Anyone can create a market for any token.), owner(whoever created the order), type(bid or ask), price(either the highest price for bid or the lowest price for ask), amount(amount of token for an ask, amount of money for a bid), createdAt(timestamp of when the order was created), status(open, partially executed, executed, closed), lastUpdatedAt and an id of course.
+
+2. Order owner needs to pay upfront, obviously, when an order is created. Order owner can cancel (i.e. close) / update (amount, price) their own orders at any time as long as it's not closed. They pay up or get refund as needed when update happens.
+
+3. Match makers can match bid and ask orders together even if they own none of these orders. They will sort all open orders off-chain and match two orders at a time. Once two orders are matched, the contract should update order details and send tokens to each party (if an order is not fully fulfilled, the status should be "partially executed" and amount should be updated). There's a fee for the maker and one for the taker (each is configurable and might be different, see https://www.binance.com/en/support/faq/360007720071). Match makers and dev each gets a different share of the fees (again, each is configurable and might be different). If there's more profits, e.g. $20 bid and $18 ask, match maker and dev split the profit 50-50.
+
+4. Anyone can immediately fill an existing open order. Just pay up. Same rule for fees.
+
+5. Contract owner can pause the contract so no new orders and no matching orders. When and only when it's paused, contract owner can migrate an open order to a new orderbook contract that copies everything (including transferring the necessary tokens) except the order id will be different in the new contract. After the migration of an order, the order's status on original contract should be updated to closed.
+
+6. Please use github private repo to track your work and share with @renruyi on github. How you organize your repo. How you commit and push is also part of the evaluation.
+
+7. Feel free to use open zeppelin but--I shouldn't need to say this--it's not okay to copy codes from elsewhere for a test project.
