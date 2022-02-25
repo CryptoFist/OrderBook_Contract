@@ -5,7 +5,8 @@ pragma solidity >=0.8.0;
  * @title Interface for OrderBook
  */
 interface IOrderBook {
-  struct Order {
+
+  struct OrderInfo {
     address tradeTokenAddress;
     address maker;
     uint8 orderType;
@@ -14,6 +15,12 @@ interface IOrderBook {
     uint256 createdAt;
     uint8 status;
     uint256 lastUpdatedAt;
+  }
+
+  struct Order {
+    address maker;
+    uint256 amount;
+    uint256 orderID;
   }
 
   struct OrderPrice {
