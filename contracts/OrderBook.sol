@@ -65,7 +65,7 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
      uint8 _orderType,  // 0: ask, 1: bid
      uint256 _price,
      uint256 _amount
-   ) external nonReentrant whenNotPaused {
+   ) public nonReentrant whenNotPaused {
      require (_tradeToken != address(0), "orderbook: tradetoken can't be zero token.");
      require (msg.sender != address(0), "orderbook: owner can't be zero address.");
      require (_orderType == 0 || _orderType == 1, "orderbook: unknown type.");
@@ -73,8 +73,12 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
      require (_amount > 0, "orderbook: amount should be greater than zero.");
 
      if (_orderType == ORDER_TYPE_ASK) {
+       transferAndCheck(_tradeToken, msg.sender, address(this), _amount);
+       emit PlaceSellOrder(msg.sender, _price, _amount, _tradeToken);
        _placeSellOrder(msg.sender, _tradeToken, _price, _amount);
      } else {
+       transferAndCheck(address(baseToken), msg.sender, address(this), _amount.mul(_price));
+       emit PlaceBuyOrder(msg.sender, _price, _amount, _tradeToken);
        _placeBuyOrder(msg.sender, _tradeToken, _price, _amount);
      }
    }
@@ -84,11 +88,9 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
      address _from,
      address _to,
      uint256 _value
-   ) internal returns(uint256 transferedValue) {
+   ) internal {
      IERC20 token = IERC20(_tokenAddress);
-     uint256 originBalance = token.balanceOf(_to);
      token.safeTransferFrom(_from, _to, _value);
-     transferedValue = token.balanceOf(_to).sub(originBalance);
    }
 
    function getSplitProfit(uint256 _profitAmount) internal view returns (uint16 devProfit, uint16 matcherProfit) {
@@ -191,9 +193,6 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
      uint256 _price,
      uint256 _amount
    ) internal {
-     transferAndCheck(address(baseToken), _maker, address(this), _amount.mul(_price));
-     emit PlaceBuyOrder(_maker, _price, _amount, _tradeToken);
-
      uint256 sellPricePointer = minSellPrice[_tradeToken];
     
      uint256 amountReflect = _amount;
@@ -226,6 +225,7 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
 
                orderInfos[askOrders[_tradeToken][sellPricePointer][i].orderID].lastUpdatedAt = block.timestamp;
                orderInfos[askOrders[_tradeToken][sellPricePointer][i].orderID].status = ORDER_STATUS_EXECUTED;
+               orderInfos[askOrders[_tradeToken][sellPricePointer][i].orderID].amount = amountReflect;
                askOrderCounts[_tradeToken][sellPricePointer] -= 1;
              }
            } else {
@@ -245,6 +245,7 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
 
               orderInfos[askOrders[_tradeToken][sellPricePointer][i].orderID].lastUpdatedAt = block.timestamp;
               orderInfos[askOrders[_tradeToken][sellPricePointer][i].orderID].status = ORDER_STATUS_PART_EXECUTED;
+              orderInfos[askOrders[_tradeToken][sellPricePointer][i].orderID].amount = amountReflect;
            }
            i ++;
          }
@@ -263,9 +264,6 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
      uint256 _price,
      uint256 _amount
    ) internal {
-     _amount = transferAndCheck(_tradeToken, _maker, address(this), _amount);
-     emit PlaceSellOrder(_maker, _price, _amount, _tradeToken);
-
      uint256 buyPricePointer = maxBuyPrice[_tradeToken];
      uint256 amountReflect = _amount;
      if (maxBuyPrice[_tradeToken] > 0 && _price <= maxBuyPrice[_tradeToken]) {
@@ -297,6 +295,7 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
 
                orderInfos[bidOrders[_tradeToken][buyPricePointer][i].orderID].lastUpdatedAt = block.timestamp;
                orderInfos[bidOrders[_tradeToken][buyPricePointer][i].orderID].status = ORDER_STATUS_EXECUTED;
+               orderInfos[bidOrders[_tradeToken][buyPricePointer][i].orderID].amount = amountReflect;
                bidOrderCounts[_tradeToken][buyPricePointer] -= 1;
              }
            } else {
@@ -315,6 +314,7 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
               amountReflect = 0;
               orderInfos[bidOrders[_tradeToken][buyPricePointer][i].orderID].lastUpdatedAt = block.timestamp;
               orderInfos[bidOrders[_tradeToken][buyPricePointer][i].orderID].status = ORDER_STATUS_PART_EXECUTED;
+              orderInfos[bidOrders[_tradeToken][buyPricePointer][i].orderID].amount = amountReflect;
            }
            i ++;
          }
@@ -348,6 +348,7 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
           ORDER_TYPE_BID,
           _price,
           _amount,
+          0,
           curTime,
           ORDER_STATUS_OPEN,
           curTime
@@ -413,6 +414,7 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
         ORDER_TYPE_ASK,
         _price,
         _amount,
+        0,
         curTime,
         ORDER_STATUS_OPEN,
         curTime
@@ -492,10 +494,14 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
      }
    }
 
-   function close(uint256 _orderID) external {
+   function close(uint256 _orderID) public {
      require (msg.sender == orderInfos[_orderID].maker && orderInfos[_orderID].maker != address(0), "orderbook: not order owner.");
      require (orderInfos[_orderID].status != ORDER_STATUS_CLOSED, "orderbook: already closed.");
 
+     deleteOrder(_orderID);
+   }
+
+   function deleteOrder(uint256 _orderID) internal {
      orderInfos[_orderID].status = ORDER_STATUS_CLOSED;
      address tokenAddress = orderInfos[_orderID].tradeTokenAddress;
      uint256 price = orderInfos[_orderID].price;
@@ -571,6 +577,41 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
        }
      }
    }
-
    
+   function updateOrder(uint256 _orderID, uint256 _price, uint256 _amount) external {
+     require (msg.sender == orderInfos[_orderID].maker && orderInfos[_orderID].maker != address(0), "orderbook: not order owner.");
+     require (orderInfos[_orderID].status != ORDER_STATUS_CLOSED, "orderbook: already closed.");
+
+     OrderInfo memory orderInfo = orderInfos[_orderID];
+     deleteOrder(_orderID);
+
+     if (orderInfo.orderType == ORDER_TYPE_ASK) {
+       if (_amount < orderInfo.amount) {
+         // refund
+         uint256 refundAmount = (orderInfo.amount).sub(_amount);
+         IERC20 tradeToken = IERC20(orderInfo.tradeTokenAddress);
+         tradeToken.safeApprove(address(this), refundAmount);
+         tradeToken.safeApprove(msg.sender, refundAmount);
+         tradeToken.safeTransferFrom(address(this), msg.sender, refundAmount);
+       } else {
+         transferAndCheck(orderInfo.tradeTokenAddress, msg.sender, address(this), _amount.sub(orderInfo.amount));
+       }
+       emit PlaceSellOrder(msg.sender, _price, _amount, orderInfo.tradeTokenAddress);
+       _placeSellOrder(msg.sender, orderInfo.tradeTokenAddress, _price, _amount);
+     } else {
+       uint256 originAmount = (orderInfo.price).mul(orderInfo.amount);
+       uint256 newAmount = _price.mul(_amount);
+       if (originAmount > newAmount) {
+        // refund
+        uint256 refundAmount = originAmount.sub(newAmount);
+        baseToken.safeApprove(address(this), refundAmount);
+        baseToken.safeApprove(msg.sender, refundAmount);
+        baseToken.safeTransferFrom(address(this), msg.sender, refundAmount);
+       } else {
+        transferAndCheck(address(baseToken), msg.sender, address(this), newAmount.sub(originAmount));
+       }
+       emit PlaceBuyOrder(msg.sender, _price, _amount, orderInfo.tradeTokenAddress);
+       _placeBuyOrder(msg.sender, orderInfo.tradeTokenAddress, _price, _amount);
+     }    
+   }
 }

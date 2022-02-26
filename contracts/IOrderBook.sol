@@ -12,6 +12,7 @@ interface IOrderBook {
     uint8 orderType;
     uint256 price;
     uint256 amount;
+    uint256 debtAmount;
     uint256 createdAt;
     uint8 status;
     uint256 lastUpdatedAt;
