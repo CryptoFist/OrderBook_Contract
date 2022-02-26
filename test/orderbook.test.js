@@ -29,9 +29,9 @@ describe('orderbook contract', function () {
   })
 
   beforeEach(async function() {
-    await this.usdc.approve(this.orderbookContract.address, bigNum(10000));
-    await this.btc.approve(this.orderbookContract.address, bigNum(10000));
-    await this.eth.approve(this.orderbookContract.address, bigNum(10000));
+    await this.usdc.approve(this.orderbookContract.address, bigNum(100000000));
+    await this.btc.approve(this.orderbookContract.address, bigNum(100000000));
+    await this.eth.approve(this.orderbookContract.address, bigNum(100000000));
   })
 
   it ('place new ask order with btc token should be success', async function () {
@@ -41,12 +41,12 @@ describe('orderbook contract', function () {
       this.btc.address,
       0,  // ask
       bigNum(30), // 30 USDC
-      bigNum(50), // 50 BTC 
+      50, // 50 BTC 
       {from: owner.address}
     );
 
-    const askOrderCount = await this.orderbookContract.getAskOrderCount();
-    assert.equal(BigInt(askOrderCount), 1);
+    const orderCount = await this.orderbookContract.getOrderCount();
+    assert.equal(BigInt(orderCount), 1);
   })
 
   it ('place new bid order with eth token should be success', async function () {
@@ -56,34 +56,10 @@ describe('orderbook contract', function () {
       this.eth.address,
       1,  // bid
       bigNum(10), // 10 USDC
-      bigNum(50), // 50 ETH
-      {from: owner.address}
-    );
-    // console.log(await this.usdc.balanceOf(owner.address));
-
-    const bidOrderCount = await this.orderbookContract.getBidOrderCount();
-    assert.equal(BigInt(bidOrderCount), 1);
-  })
-
-  it ('place new bid order that matches to first ask order', async function () {
-    const [owner] = await ethers.getSigners();
-
-    // console.log(`BTC balance is ${await this.btc.balanceOf(owner.address)}`);
-    // console.log(`USDC balance is ${await this.usdc.balanceOf(owner.address)}`);
-
-    await this.orderbookContract.placeOrder(
-      this.btc.address,
-      1,  // bid
-      bigNum(31), // 9 USDC
-      bigNum(50), // 50 BTC
+      50, // 50 ETH
       {from: owner.address}
     );
 
-    // console.log(`BTC balance is ${await this.btc.balanceOf(owner.address)}`);
-    // console.log(`USDC balance is ${await this.usdc.balanceOf(owner.address)}`);
-    
-    // console.log(await this.usdc.balanceOf(owner.address));
-  })
-
-  
+    const orderCount = await this.orderbookContract.getOrderCount();
+  })  
 });

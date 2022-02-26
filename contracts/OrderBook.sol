@@ -363,6 +363,7 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
         bidOrderCounts[_tradeToken][_price] += 1;
 
         orderID ++;
+        orderCount ++;
 
         bidOrderPrices[_tradeToken][_price].amount = bidOrderPrices[_tradeToken][_price].amount.add(_amount);
         emit DrawToBuyBook(_maker, _price, _amount, _tradeToken);
@@ -427,6 +428,7 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
       );
 
       orderID ++;
+      orderCount ++;
       askOrderCounts[_tradeToken][_price] += 1;
 
       askOrderPrices[_tradeToken][_price].amount = askOrderPrices[_tradeToken][_price].amount.add(_amount);
@@ -468,6 +470,10 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
 
    function release() external onlyOwner {
      _unpause();
+   }
+
+   function getOrderCount() external view returns(uint256 count) {
+     count = orderCount;
    }
 
    function getAllOrders() external view returns (OrderInfo[] memory) {
