@@ -16,20 +16,31 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
 
   IERC20 private baseToken;
   uint256 private orderID;
+  address private devWallet;
 
-  mapping(uint256 => OrderInfo) private askOrderInfos;  // orderID => orderInfo
+  mapping(address => AssetInfo) private assetInfos;  // asset address => isExist
+  mapping(uint256 => address) private assetList;    // index => asset address
+  uint256 private assetCnt;
+
+  mapping(uint256 => OrderInfo) private orderInfos;  // orderID => orderInfo
+  uint256 private orderCount;
+
   mapping(address => mapping(uint256 => mapping(uint256 => Order))) private askOrders; // tradeTokenAddress => price => index => Order
   mapping(address => mapping(uint256 => OrderPrice)) private askOrderPrices; // tradeTokenAddress => price => OrderPrice
   mapping(address => mapping(uint256 => uint256)) private askOrderCounts; // tradeTokenAddress => price => count
   mapping(address => uint256) private minSellPrice;  // tradeTokenAddress => minSellPrice
-  uint256 private askOrderCount;
   
-  mapping(uint256 => OrderInfo) private bidOrderInfos;  // orderID => orderInfo
   mapping(address => mapping(uint256 => mapping(uint256 => Order))) private bidOrders; // tradeTokenAddress => price => index =>Order
   mapping(address => mapping(uint256 => OrderPrice)) private bidOrderPrices; // tradeTokenAddress => price => OrderPrice
   mapping(address => mapping(uint256 => uint256)) private bidOrderCounts; // tradeTokenAddress => price => count
   mapping(address => uint256) private maxBuyPrice;  // tradeTokenAddress => maxSellPrice
-  uint256 private bidOrderCount;
+
+  mapping(uint256 => FeeRule) private takerFees; // index => maxPrice
+  mapping(uint256 => FeeRule) private makerFees; // index => maxPrice
+  mapping(uint256 => ProfitRule) private splitProfits; // index => maxPrice
+  uint256 private takerFeeCnt;
+  uint256 private makerFeeCnt;
+  uint256 private splitProfitCnt;
 
   uint8 private ORDER_TYPE_ASK = 0;
   uint8 private ORDER_TYPE_BID = 1;
@@ -80,28 +91,98 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
      transferedValue = token.balanceOf(_to).sub(originBalance);
    }
 
+   function getSplitProfit(uint256 _profitAmount) internal view returns (uint16 devProfit, uint16 matcherProfit) {
+     uint256 i = 0;
+     while (i < splitProfitCnt && splitProfits[i].maxProfit < _profitAmount) {
+       i ++;
+     }
+
+     devProfit = splitProfits[i].devProfit;
+     matcherProfit = splitProfits[i].matcherProfit;
+   }
+
+   function getTakerFee(uint256 _price) internal view returns (uint16 takerFee) {
+     uint256 i = 0;
+     while (i < takerFeeCnt && takerFees[i].maxPrice < _price) {
+       i ++;
+     }
+
+     takerFee = takerFees[i].fee;
+   }
+
+   function getMakerFee(uint256 _price) internal view returns (uint16 makerFee) {
+     uint256 i = 0;
+     while (i < makerFeeCnt && makerFees[i].maxPrice < _price) {
+       i ++;
+     }
+
+     makerFee = makerFees[i].fee;
+   }
+
    function matchOrder(
      address _buyer,
      address _seller,
      address _tradeToken,
      uint256 _tradeTokenAmount,
      uint256 _baseTokenAmount,
-     uint256 _restAmount
+     uint256 _price,
+     uint256 _profit,
+     uint8 _orderType
    ) internal {
      // transfer proper tokens to two parties
      IERC20 tradeToken = IERC20(_tradeToken);
-     baseToken.safeApprove(address(this), _baseTokenAmount.add(_restAmount));
+     baseToken.safeApprove(address(this), _baseTokenAmount);
      tradeToken.safeApprove(address(this), _tradeTokenAmount);
-     baseToken.safeApprove(_seller, _baseTokenAmount.add(_restAmount));
+     baseToken.safeApprove(_seller, _baseTokenAmount);
      tradeToken.safeApprove(_buyer, _tradeTokenAmount);
+
+     // calc fee, take and maker
+     uint256 buyerFee = 0;
+     uint256 sellerFee = 0;
+     uint256 takerFee = getTakerFee(_price);
+     uint256 makerFee = getMakerFee(_price);
+     if (_orderType == ORDER_TYPE_ASK) {    // buyer: maker, seller: taker
+      buyerFee = _tradeTokenAmount.mul(makerFee).div(10**4);
+      sellerFee = _baseTokenAmount.mul(takerFee).div(10**4);
+     } else { // buyer: taker, seller: maker
+      buyerFee = _tradeTokenAmount.mul(takerFee).div(10**4);
+      sellerFee = _baseTokenAmount.mul(makerFee).div(10**4);
+     }
+
+     _tradeTokenAmount = _tradeTokenAmount.sub(buyerFee);
+     _baseTokenAmount = _baseTokenAmount.sub(sellerFee);
 
      baseToken.safeTransferFrom(address(this), _seller, _baseTokenAmount);
      tradeToken.safeTransferFrom(address(this), _buyer, _tradeTokenAmount);
 
-     // calc fee, take and maker
      // split profit to dev and match maker
+     uint256 devProfitPro;
+     uint256 matcherProfitPro;
+     (devProfitPro, matcherProfitPro) = getSplitProfit(_profit);
+     
+     uint256 devProfit = buyerFee.mul(devProfitPro).div(10**4);
+     uint256 matcherProfit = buyerFee.sub(devProfit);
 
-     baseToken.safeTransferFrom(address(this), _buyer, _restAmount);
+     tradeToken.safeApprove(devWallet, devProfit);
+     tradeToken.safeApprove(address(this), devProfit);
+     tradeToken.safeTransferFrom(address(this), devWallet, devProfit);
+
+     devProfit = sellerFee.mul(devProfitPro).div(10**4);
+     matcherProfit = sellerFee.sub(devProfit);
+
+     baseToken.safeApprove(devWallet, devProfit);
+     baseToken.safeApprove(address(this), devProfit);
+     baseToken.safeTransferFrom(address(this), devWallet, devProfit);
+     
+   }
+
+   function checkAndAddAsset(address _tokenAddress, uint256 _amount) internal {
+     assetInfos[_tokenAddress].amount = (assetInfos[_tokenAddress].amount).add(_amount);
+     if (assetInfos[_tokenAddress].exist == false) {
+       assetInfos[_tokenAddress].exist = true;
+       assetList[assetCnt] = _tokenAddress;
+       assetCnt ++;
+     }
    }
 
    function _placeBuyOrder(
@@ -110,7 +191,7 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
      uint256 _price,
      uint256 _amount
    ) internal {
-     transferAndCheck(address(baseToken), _maker, address(this), _amount.mul(_price).div(10**18));
+     transferAndCheck(address(baseToken), _maker, address(this), _amount.mul(_price));
      emit PlaceBuyOrder(_maker, _price, _amount, _tradeToken);
 
      uint256 sellPricePointer = minSellPrice[_tradeToken];
@@ -131,47 +212,49 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
                }
 
                uint256 matchAmount = askOrders[_tradeToken][sellPricePointer][i].amount;
-               uint256 priceOffset = _price.sub(sellPricePointer);
                matchOrder(
                 _maker,
                 askOrders[_tradeToken][sellPricePointer][i].maker, 
                 _tradeToken, 
                 matchAmount, 
-                matchAmount.mul(sellPricePointer).div(10**18),
-                matchAmount.mul(priceOffset).div(10**18)
+                matchAmount.mul(sellPricePointer),
+                sellPricePointer,
+                _price.sub(sellPricePointer),
+                ORDER_TYPE_BID
                );
                amountReflect = amountReflect.sub(matchAmount);
 
-               askOrderInfos[askOrders[_tradeToken][sellPricePointer][i].orderID].lastUpdatedAt = block.timestamp;
-               askOrderInfos[askOrders[_tradeToken][sellPricePointer][i].orderID].status = ORDER_STATUS_EXECUTED;
+               orderInfos[askOrders[_tradeToken][sellPricePointer][i].orderID].lastUpdatedAt = block.timestamp;
+               orderInfos[askOrders[_tradeToken][sellPricePointer][i].orderID].status = ORDER_STATUS_EXECUTED;
                askOrderCounts[_tradeToken][sellPricePointer] -= 1;
              }
            } else {
               askOrderPrices[_tradeToken][sellPricePointer].amount = askOrderPrices[_tradeToken][sellPricePointer].amount.sub(amountReflect);
               askOrders[_tradeToken][sellPricePointer][i].amount = askOrders[_tradeToken][sellPricePointer][i].amount.sub(amountReflect);
-              uint256 priceOffset = _price.sub(sellPricePointer);
-              matchOrder(
+               matchOrder(
                 _maker,
                 askOrders[_tradeToken][sellPricePointer][i].maker, 
                 _tradeToken, 
                 amountReflect, 
-                amountReflect.mul(sellPricePointer).div(10**18), 
-                amountReflect.mul(priceOffset).div(10**18)
+                amountReflect.mul(sellPricePointer),
+                sellPricePointer,
+                _price.sub(sellPricePointer),
+                ORDER_TYPE_BID
                );
               amountReflect = 0;
 
-              askOrderInfos[askOrders[_tradeToken][sellPricePointer][i].orderID].lastUpdatedAt = block.timestamp;
-              askOrderInfos[askOrders[_tradeToken][sellPricePointer][i].orderID].status = ORDER_STATUS_PART_EXECUTED;
+              orderInfos[askOrders[_tradeToken][sellPricePointer][i].orderID].lastUpdatedAt = block.timestamp;
+              orderInfos[askOrders[_tradeToken][sellPricePointer][i].orderID].status = ORDER_STATUS_PART_EXECUTED;
            }
            i ++;
          }
          sellPricePointer = higherPrice;
        }
      }
-
-      if (amountReflect > 0) {
-        _drawToBuyBook(_price, amountReflect, _tradeToken, _maker);
-      }
+     checkAndAddAsset(address(baseToken), amountReflect.mul(_price));
+     if (amountReflect > 0) {
+       _drawToBuyBook(_price, amountReflect, _tradeToken, _maker);
+     }
    }
 
    function _placeSellOrder(
@@ -200,36 +283,38 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
                }
 
                uint256 matchAmount = bidOrders[_tradeToken][buyPricePointer][i].amount;
-               uint256 priceOffset = buyPricePointer.sub(_price);
                matchOrder(
                  bidOrders[_tradeToken][buyPricePointer][i].maker, 
                  _maker, 
                  _tradeToken, 
                  matchAmount, 
-                 matchAmount.mul(buyPricePointer).div(10**18), 
-                 matchAmount.mul(priceOffset).div(10**18)
+                 matchAmount.mul(buyPricePointer),
+                 buyPricePointer,
+                _price.sub(buyPricePointer),
+                ORDER_TYPE_ASK
                  );
                amountReflect = amountReflect.sub(matchAmount);
 
-               bidOrderInfos[bidOrders[_tradeToken][buyPricePointer][i].orderID].lastUpdatedAt = block.timestamp;
-               bidOrderInfos[bidOrders[_tradeToken][buyPricePointer][i].orderID].status = ORDER_STATUS_EXECUTED;
+               orderInfos[bidOrders[_tradeToken][buyPricePointer][i].orderID].lastUpdatedAt = block.timestamp;
+               orderInfos[bidOrders[_tradeToken][buyPricePointer][i].orderID].status = ORDER_STATUS_EXECUTED;
                bidOrderCounts[_tradeToken][buyPricePointer] -= 1;
              }
            } else {
               bidOrderPrices[_tradeToken][buyPricePointer].amount = bidOrderPrices[_tradeToken][buyPricePointer].amount.sub(amountReflect);
               bidOrders[_tradeToken][buyPricePointer][i].amount = bidOrders[_tradeToken][buyPricePointer][i].amount.sub(amountReflect);
-              uint256 priceOffset = buyPricePointer.sub(_price);
               matchOrder(
                 bidOrders[_tradeToken][buyPricePointer][i].maker, 
                 _maker, 
                 _tradeToken, 
                 amountReflect, 
-                amountReflect.mul(buyPricePointer).div(10**18), 
-                amountReflect.mul(priceOffset).div(10**18)
+                amountReflect.mul(buyPricePointer),
+                buyPricePointer,
+                _price.sub(buyPricePointer),
+                ORDER_TYPE_ASK
                 );
               amountReflect = 0;
-              bidOrderInfos[bidOrders[_tradeToken][buyPricePointer][i].orderID].lastUpdatedAt = block.timestamp;
-              bidOrderInfos[bidOrders[_tradeToken][buyPricePointer][i].orderID].status = ORDER_STATUS_PART_EXECUTED;
+              orderInfos[bidOrders[_tradeToken][buyPricePointer][i].orderID].lastUpdatedAt = block.timestamp;
+              orderInfos[bidOrders[_tradeToken][buyPricePointer][i].orderID].status = ORDER_STATUS_PART_EXECUTED;
            }
            i ++;
          }
@@ -240,6 +325,7 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
      /**
       * @notice draw to buy book the rest
       */
+      checkAndAddAsset(_tradeToken, amountReflect);
       if (amountReflect > 0) {
         _drawToSellBook(_price, amountReflect, _tradeToken, _maker);
       }
@@ -256,10 +342,10 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
     ) internal {
         uint256 curTime = block.timestamp;
 
-        bidOrderInfos[orderID] = OrderInfo(
+        orderInfos[orderID] = OrderInfo(
           _tradeToken,
           _maker,
-          ORDER_TYPE_ASK,
+          ORDER_TYPE_BID,
           _price,
           _amount,
           curTime,
@@ -276,7 +362,6 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
         bidOrderCounts[_tradeToken][_price] += 1;
 
         orderID ++;
-        bidOrderCount ++;
 
         bidOrderPrices[_tradeToken][_price].amount = bidOrderPrices[_tradeToken][_price].amount.add(_amount);
         emit DrawToBuyBook(_maker, _price, _amount, _tradeToken);
@@ -322,7 +407,7 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
     ) internal {
       uint256 curTime = block.timestamp;
 
-      askOrderInfos[orderID] = OrderInfo(
+      orderInfos[orderID] = OrderInfo(
         _tradeToken,
         _maker,
         ORDER_TYPE_ASK,
@@ -340,7 +425,6 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
       );
 
       orderID ++;
-      askOrderCount ++;
       askOrderCounts[_tradeToken][_price] += 1;
 
       askOrderPrices[_tradeToken][_price].amount = askOrderPrices[_tradeToken][_price].amount.add(_amount);
@@ -380,33 +464,113 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
      _pause();
    }
 
-   function getAskOrderCount() external view returns (uint256) {
-     return askOrderCount;
+   function release() external onlyOwner {
+     _unpause();
    }
 
-   function getBidOrderCount() external view returns (uint256) {
-     return bidOrderCount;
-   }
-
-   function getAllAskOrders() external view returns (OrderInfo[] memory) {
+   function getAllOrders() external view returns (OrderInfo[] memory) {
      uint256 i = 0;
-     OrderInfo[] memory response = new OrderInfo[](askOrderCount);
+     OrderInfo[] memory response = new OrderInfo[](orderCount);
 
-     for (i = 0; i < orderID; i ++) {
-       response[i] = askOrderInfos[i];
+     for (i = 0; i < orderCount; i ++) {
+       response[i] = orderInfos[i];
      }
 
      return response;
    }
 
-   function getAllBidOrders() external view returns (OrderInfo[] memory) {
+   function withDrawAll() external whenPaused onlyOwner {
      uint256 i = 0;
-     OrderInfo[] memory response = new OrderInfo[](bidOrderCount);
+     for (i = 0; i < assetCnt; i ++) {
+       address tokenAddress = assetList[i];
+       IERC20 token = IERC20(tokenAddress);
+       uint256 amount = assetInfos[tokenAddress].amount;
+       token.safeApprove(address(this), amount);
+       token.safeApprove(owner(), amount);
 
-     for (i = 0; i < orderID; i ++) {
-       response[i] = bidOrderInfos[i];
+       token.safeTransferFrom(address(this), owner(), amount);
      }
-
-     return response;
    }
+
+   function close(uint256 _orderID) external {
+     require (msg.sender == orderInfos[_orderID].maker && orderInfos[_orderID].maker != address(0), "orderbook: not order owner.");
+     require (orderInfos[_orderID].status != ORDER_STATUS_CLOSED, "orderbook: already closed.");
+
+     orderInfos[_orderID].status = ORDER_STATUS_CLOSED;
+     address tokenAddress = orderInfos[_orderID].tradeTokenAddress;
+     uint256 price = orderInfos[_orderID].price;
+     if (orderInfos[_orderID].orderType == ORDER_TYPE_ASK) {
+       uint256 cnt = askOrderCounts[tokenAddress][price];
+       uint i = 0;
+       for (i = 0; i < cnt; i ++) {
+         if (askOrders[tokenAddress][price][i].orderID == _orderID) {
+           delete askOrders[tokenAddress][price][i];
+           askOrderCounts[tokenAddress][price] = cnt.sub(1);
+           uint256 higher = askOrderPrices[tokenAddress][price].higherPrice;
+           uint256 lower = askOrderPrices[tokenAddress][price].lowerPrice;
+
+           if (higher != 0) {
+             if (lower != 0) {
+               askOrderPrices[tokenAddress][lower].higherPrice = higher;
+               askOrderPrices[tokenAddress][higher].lowerPrice = lower;
+             } else {
+               askOrderPrices[tokenAddress][higher].lowerPrice = 0;
+             }
+           } else {
+             if (lower != 0) {
+               askOrderPrices[tokenAddress][lower].higherPrice = 0;
+             }
+           }
+
+           if (lower != 0) {
+             if (higher != 0) {
+             } else {
+               askOrderPrices[tokenAddress][lower].higherPrice = 0;
+             }
+           } else {
+             if (higher != 0) {
+               askOrderPrices[tokenAddress][higher].lowerPrice = 0;
+             }
+           }
+         }
+       }
+     } else {
+       uint i = 0;
+       uint256 cnt = bidOrderCounts[tokenAddress][price];
+       for (i = 0; i < cnt; i ++) {
+         if (bidOrders[tokenAddress][price][i].orderID == _orderID) {
+           delete bidOrders[tokenAddress][price][i];
+           bidOrderCounts[tokenAddress][price] = cnt.sub(1);
+           uint256 higher = bidOrderPrices[tokenAddress][price].higherPrice;
+           uint256 lower = bidOrderPrices[tokenAddress][price].lowerPrice;
+
+           if (higher != 0) {
+             if (lower != 0) {
+               bidOrderPrices[tokenAddress][lower].higherPrice = higher;
+               bidOrderPrices[tokenAddress][higher].lowerPrice = lower;
+             } else {
+               bidOrderPrices[tokenAddress][higher].lowerPrice = 0;
+             }
+           } else {
+             if (lower != 0) {
+               bidOrderPrices[tokenAddress][lower].higherPrice = 0;
+             }
+           }
+
+           if (lower != 0) {
+             if (higher != 0) {
+             } else {
+               bidOrderPrices[tokenAddress][lower].higherPrice = 0;
+             }
+           } else {
+             if (higher != 0) {
+               bidOrderPrices[tokenAddress][higher].lowerPrice = 0;
+             }
+           }
+         }
+       }
+     }
+   }
+
+   
 }

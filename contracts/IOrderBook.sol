@@ -30,6 +30,22 @@ interface IOrderBook {
     uint256 amount;
   }
 
+  struct FeeRule {
+    uint256 maxPrice;
+    uint16 fee; // % * 10**2, 300 => 0.03%
+  }
+
+  struct ProfitRule {
+    uint256 maxProfit;
+    uint16 devProfit;
+    uint16 matcherProfit;
+  }
+
+  struct AssetInfo {
+    uint256 amount;
+    bool exist;
+  }
+
   event PlaceBuyOrder(address _maker, uint256 price, uint256 amountOfBaseToken, address tradeToken);
   event PlaceSellOrder(address _maker, uint256 price, uint256 amountOfTradeToken, address tradeToken);
   event DrawToSellBook(address sender, uint256 price, uint256 amountOfTradeToken, address tradeToken);
