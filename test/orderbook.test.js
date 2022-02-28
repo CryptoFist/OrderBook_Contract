@@ -236,29 +236,82 @@ describe('orderbook contract', function () {
     assert.equal(orders[1].orderID, 3);
   })
 
-  it ('update order and check refund', async function () {
-    // let orders = await this.orderbookContract.getAllOrders();
-    // console.log(orders);
+  it ('place bid order with base token should be fail.', async function () {
+    await expect(this.orderbookContract.placeOrder(
+      this.usdc.address,
+      0,  // ask
+      bigNum(30), // 30 USDC
+      bigNum(50) // 50 USDC
+    )).to.be.revertedWith("orderbook: can't place order with same token.");
   })
 
-  it ('update order and check payment', async function () {
+  it ('update order and check refund', async function () {
+    let orders = await this.orderbookContract.getAllOrders();
+    const originBalance = await this.usdc.balanceOf(this.owner.address);
+    await this.orderbookContract.updateOrder(orders[0].orderID, bigNum(40), bigNum(1));
+    const newBalance = await this.usdc.balanceOf(this.owner.address);
+
+    const receivedAmount = smallNum(newBalance) - smallNum(originBalance);
+    assert.equal(receivedAmount, 160);
+  })
+
+  it ('update last order and check payment', async function () {
+    let orders = await this.orderbookContract.getAllOrders();
+    let length = orders.length;
+    const originBalance = await this.usdc.balanceOf(this.owner.address);
+    await this.orderbookContract.updateOrder(orders[length - 1].orderID, bigNum(40), bigNum(5));
+    const newBalance = await this.usdc.balanceOf(this.owner.address);
+
+    await this.usdc.approve(this.orderbookContract.address, bigNum(200));
     
+    const paidAmount = smallNum(originBalance) - smallNum(newBalance);
+    assert.equal(paidAmount, 160);
+  })
+
+  it ('pause contract with not owner should be fail.', async function () {
+    await expect(this.orderbookContract.connect(this.empty).pause()).to.be.revertedWith("");    
   })
 
   it ('pause contract and check the function call', async function () {
+    await this.orderbookContract.pause();
+    await expect(this.orderbookContract.placeOrder(
+      this.usdc.address,
+      0,  // ask
+      bigNum(30), // 30 USDC
+      bigNum(50) // 50 USDC
+    )).to.be.revertedWith("");
+  })
+
+  it ('deploy new orderbook contract and copy data from old contract to new contract', async function () {
+    this.neworderbookContract = await ethers.getContractFactory('OrderBook');
+    this.neworderbookContract = await this.neworderbookContract.deploy(this.usdc.address, this.dev.address);
+    await this.neworderbookContract.deployed();
+
+    const orders = await this.orderbookContract.getAllOrders();
+    const orderCount = await this.orderbookContract.getOrderCount();
+    for (let i = 0; i < orders.length; i ++) {
+      await this.neworderbookContract.migrateOrder(orders[i]);            
+    }
+
+    const neworderCount = await this.neworderbookContract.getOrderCount();
+    assert.equal(BigInt(orderCount), BigInt(neworderCount));
+
+    await expect(this.orderbookContract.connect(this.alice).withDrawAll()).to.be.revertedWith("");
+    const assetList = await this.orderbookContract.getAssetList();
+    await this.orderbookContract.withDrawAll();
+
+    const tokenList = [this.usdc, this.usdt, this.btc, this.eth];
     
-  })
-
-  it ('withdraw all assets.', async function () {
-    
-  })
-
-  it ('copy data from old contract to new contract', async function () {
-
-  })
-
-  it ('check the new contract', async function () {
-
+    for (i = 0; i < assetList.length; i ++) {
+      if (assetList[i].amount > 0) {
+        for (let j = 0; j < tokenList.length; j ++) {
+          if (tokenList[j].address == assetList.tokenAddress) {
+            await tokenList[j].approve(this.neworderbookContract.address, tokenList[j].amount);
+            await tokenList[j].transferFrom(this.owner.address, this.neworderbookContract.address, tokenList[j].amount);
+          }
+        }
+      }
+    }
   })
 
 });

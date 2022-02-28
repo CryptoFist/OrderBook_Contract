@@ -48,6 +48,11 @@ interface IOrderBook {
     bool exist;
   }
 
+  struct AssetListInfo {
+    address tokenAddress;
+    uint256 amount;
+  }
+
   event PlaceBuyOrder(address _maker, uint256 price, uint256 amountOfBaseToken, address tradeToken);
   event PlaceSellOrder(address _maker, uint256 price, uint256 amountOfTradeToken, address tradeToken);
   event DrawToSellBook(address sender, uint256 price, uint256 amountOfTradeToken, address tradeToken);

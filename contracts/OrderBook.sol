@@ -19,7 +19,7 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
   address private devWallet;
 
   mapping(address => AssetInfo) private assetInfos;  // asset address => isExist
-  mapping(uint256 => address) private assetList;    // index => asset address
+  mapping(uint256 => AssetListInfo) private assetList;    // index => asset address
   uint256 private assetCnt;
 
   mapping(uint256 => OrderInfo) private orderInfos;  // orderID => orderInfo
@@ -58,8 +58,27 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
      devWallet = _devWallet;
    }
 
-   function setDevWallet(address _devWallet) external onlyOwner {
+   function setDevWallet(address _devWallet) external onlyOwner whenNotPaused {
      devWallet = _devWallet;
+   }
+
+   function migrateOrder(OrderInfo memory _orderInfo) external nonReentrant whenNotPaused onlyOwner {
+
+     require (_orderInfo.tradeTokenAddress != address(0), "orderbook: tradetoken can't be zero token.");
+     require (_orderInfo.tradeTokenAddress != address(baseToken), "orderbook: can't place order with same token.");
+     require (_orderInfo.maker != address(0), "orderbook: maker should not be zero address.");
+     require (msg.sender != address(0), "orderbook: owner can't be zero address.");
+     require (_orderInfo.orderType == 0 || _orderInfo.orderType == 1, "orderbook: unknown type.");
+     require (_orderInfo.price > 0, "orderbook: price should be greater than zero.");
+     require (_orderInfo.amount > 0, "orderbook: amount should be greater than zero.");
+
+     if (_orderInfo.orderType == ORDER_TYPE_ASK) {
+       emit PlaceSellOrder(_orderInfo.maker, _orderInfo.price, _orderInfo.amount, _orderInfo.tradeTokenAddress);
+       _placeSellOrder(_orderInfo.maker, _orderInfo.tradeTokenAddress, _orderInfo.price, _orderInfo.amount);
+     } else {
+       emit PlaceBuyOrder(_orderInfo.maker, _orderInfo.price, _orderInfo.amount, _orderInfo.tradeTokenAddress);
+       _placeBuyOrder(_orderInfo.maker, _orderInfo.tradeTokenAddress, _orderInfo.price, _orderInfo.amount);
+     }
    }
 
    /**
@@ -70,8 +89,9 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
      uint8 _orderType,  // 0: ask, 1: bid
      uint256 _price,
      uint256 _amount
-   ) public nonReentrant whenNotPaused {
+   ) external nonReentrant whenNotPaused {
      require (_tradeToken != address(0), "orderbook: tradetoken can't be zero token.");
+     require (_tradeToken != address(baseToken), "orderbook: can't place order with same token.");
      require (msg.sender != address(0), "orderbook: owner can't be zero address.");
      require (_orderType == 0 || _orderType == 1, "orderbook: unknown type.");
      require (_price > 0, "orderbook: price should be greater than zero.");
@@ -183,11 +203,10 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
      
    }
 
-   function checkAndAddAsset(address _tokenAddress, uint256 _amount) internal {
-     assetInfos[_tokenAddress].amount = (assetInfos[_tokenAddress].amount).add(_amount);
+   function checkAndAddAsset(address _tokenAddress) internal {
      if (assetInfos[_tokenAddress].exist == false) {
        assetInfos[_tokenAddress].exist = true;
-       assetList[assetCnt] = _tokenAddress;
+       assetList[assetCnt].tokenAddress = _tokenAddress;
        assetCnt ++;
      }
    }
@@ -205,7 +224,7 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
        while (amountReflect > 0 && sellPricePointer <= _price && sellPricePointer != 0) {
          uint8 i = 0;
          uint256 higherPrice = askOrderPrices[_tradeToken][sellPricePointer].higherPrice;
-         while (i <= askOrderCounts[_tradeToken][sellPricePointer] && amountReflect > 0) {
+         while (i < askOrderCounts[_tradeToken][sellPricePointer] && amountReflect > 0) {
            if (amountReflect >= askOrders[_tradeToken][sellPricePointer][i].amount) {
              //if the last order has been matched, delete the step
              if (i == askOrderCounts[_tradeToken][sellPricePointer] - 1) {
@@ -260,7 +279,7 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
          sellPricePointer = higherPrice;
        }
      }
-     checkAndAddAsset(address(baseToken), amountReflect.mul(_price).div(10**18));
+     checkAndAddAsset(address(baseToken));
      if (amountReflect > 0) {
        _drawToBuyBook(_price, amountReflect, _tradeToken, _maker);
      }
@@ -278,7 +297,7 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
        while (amountReflect > 0 && buyPricePointer >= _price && buyPricePointer != 0) {
          uint8 i = 0;
          uint256 lowerPrice = bidOrderPrices[_tradeToken][buyPricePointer].lowerPrice;
-         while (i <= bidOrderCounts[_tradeToken][buyPricePointer] && amountReflect > 0) {
+         while (i < bidOrderCounts[_tradeToken][buyPricePointer] && amountReflect > 0) {
            if (amountReflect >= bidOrders[_tradeToken][buyPricePointer][i].amount) {
              //if the last order has been matched, delete the step
              if (i == bidOrderCounts[_tradeToken][buyPricePointer] - 1) {
@@ -333,7 +352,7 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
      /**
       * @notice draw to buy book the rest
       */
-      checkAndAddAsset(_tradeToken, amountReflect);
+      checkAndAddAsset(_tradeToken);
       if (amountReflect > 0) {
         _drawToSellBook(_price, amountReflect, _tradeToken, _maker);
       }
@@ -505,17 +524,40 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
      return orderInfos[_orderID];
    }
 
+   function getAssetList() public view onlyOwner returns (AssetListInfo[] memory) {
+     uint256 i = 0;
+     AssetListInfo[] memory _assetList = new AssetListInfo[](assetCnt);
+     for (i = 0; i < assetCnt; i ++) {
+       _assetList[i] = assetList[i];
+       IERC20 token = IERC20(assetList[i].tokenAddress);
+       _assetList[i].amount = token.balanceOf(address(this));
+     }
+
+     return _assetList;
+   }
+
    function withDrawAll() external whenPaused onlyOwner {
      uint256 i = 0;
+     AssetListInfo[] memory _assetList = getAssetList();
      for (i = 0; i < assetCnt; i ++) {
-       address tokenAddress = assetList[i];
+       address tokenAddress = _assetList[i].tokenAddress;
        IERC20 token = IERC20(tokenAddress);
-       uint256 amount = assetInfos[tokenAddress].amount;
-       token.approve(address(this), amount);
-       token.approve(owner(), amount);
+       if (_assetList[i].amount > 0) {
+         token.approve(address(this), _assetList[i].amount);
+         token.approve(owner(), _assetList[i].amount);
 
-       token.safeTransferFrom(address(this), owner(), amount);
+         token.safeTransferFrom(address(this), owner(), _assetList[i].amount);
+       }
      }
+   }
+
+   function getAssetCount() external view onlyOwner returns (uint256) {
+     return assetCnt;
+   }
+
+   function getTokenBalance(address _tokenAddress) external view returns (uint256 balance) {
+     IERC20 token = IERC20(_tokenAddress);
+     balance = token.balanceOf(msg.sender);
    }
 
    function getCurOrderID() external view returns(uint256) {
@@ -644,6 +686,7 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
      require (orderInfos[_orderID].status != ORDER_STATUS_CLOSED, "orderbook: already closed.");
 
      OrderInfo memory orderInfo = orderInfos[_orderID];
+     orderInfos[_orderID].amount = 0;
      deleteOrder(_orderID);
 
      if (orderInfo.orderType == ORDER_TYPE_ASK) {
@@ -657,11 +700,13 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
        } else {
          transferAndCheck(orderInfo.tradeTokenAddress, msg.sender, address(this), _amount.sub(orderInfo.amount));
        }
+       
        emit PlaceSellOrder(msg.sender, _price, _amount, orderInfo.tradeTokenAddress);
        _placeSellOrder(msg.sender, orderInfo.tradeTokenAddress, _price, _amount);
      } else {
        uint256 originAmount = (orderInfo.price).mul(orderInfo.amount);
        uint256 newAmount = _price.mul(_amount);
+
        if (originAmount > newAmount) {
         // refund
         uint256 refundAmount = originAmount.sub(newAmount);
@@ -670,7 +715,8 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
         baseToken.approve(msg.sender, refundAmount);
         baseToken.safeTransferFrom(address(this), msg.sender, refundAmount);
        } else {
-        transferAndCheck(address(baseToken), msg.sender, address(this), newAmount.sub(originAmount));
+         uint256 desiredAmount = newAmount.sub(originAmount);
+        transferAndCheck(address(baseToken), msg.sender, address(this), desiredAmount.div(10**18));
        }
        emit PlaceBuyOrder(msg.sender, _price, _amount, orderInfo.tradeTokenAddress);
        _placeBuyOrder(msg.sender, orderInfo.tradeTokenAddress, _price, _amount);
