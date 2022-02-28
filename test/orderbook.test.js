@@ -3,9 +3,19 @@ const { BigNumber, parse } = require('ethers');
 const { ethers } = require('hardhat');
 
 const bigNum = num => (num + '0'.repeat(18))
+const smallNum = num =>(parseInt(num)/bigNum(1))
 
 describe('orderbook contract', function () {
   before (async function () {
+    // const [owner, addr1] = await ethers.getSigners();
+    [
+      this.owner,
+      this.dev,
+      this.alice,
+      this.bob,
+      this.empty
+    ] = await ethers.getSigners();
+
     this.usdc = await ethers.getContractFactory('ERC20Mock');
     this.usdc = await this.usdc.deploy('USDC', 'USDC');
     await this.usdc.deployed();
@@ -23,43 +33,232 @@ describe('orderbook contract', function () {
     await this.usdt.deployed();
 
     this.orderbookContract = await ethers.getContractFactory('OrderBook');
-    this.orderbookContract = await this.orderbookContract.deploy(this.usdc.address);
+    this.orderbookContract = await this.orderbookContract.deploy(this.usdc.address, this.dev.address);
     await this.orderbookContract.deployed();
     console.log(`orderbook contract address is ${this.orderbookContract.address}`);
   })
 
   beforeEach(async function() {
-    await this.usdc.approve(this.orderbookContract.address, bigNum(100000000));
-    await this.btc.approve(this.orderbookContract.address, bigNum(100000000));
-    await this.eth.approve(this.orderbookContract.address, bigNum(100000000));
+    await this.usdc.connect(this.owner).approve(this.orderbookContract.address, bigNum(250000));
+    await this.btc.connect(this.owner).approve(this.orderbookContract.address, bigNum(250000));
+    await this.eth.connect(this.owner).approve(this.orderbookContract.address, bigNum(250000));
+
+    await this.usdc.connect(this.alice).approve(this.orderbookContract.address, bigNum(250000));
+    await this.btc.connect(this.alice).approve(this.orderbookContract.address, bigNum(250000));
+    await this.eth.connect(this.alice).approve(this.orderbookContract.address, bigNum(250000));
+
+    await this.usdc.connect(this.bob).approve(this.orderbookContract.address, bigNum(100000000));
+    await this.btc.connect(this.bob).approve(this.orderbookContract.address, bigNum(100000000));
+    await this.eth.connect(this.bob).approve(this.orderbookContract.address, bigNum(100000000));
   })
 
-  it ('place new ask order with btc token should be success', async function () {
-    const [owner] = await ethers.getSigners();
+  it ('place new ask order with btc token from alice should be success', async function () {
+    await this.btc.connect(this.owner).approve(this.alice.address, bigNum(250000));
+    await this.btc.connect(this.owner).transfer(this.alice.address, bigNum(1500));
 
-    await this.orderbookContract.placeOrder(
+    let btcBalance = await this.btc.balanceOf(this.alice.address);
+
+    await this.orderbookContract.connect(this.alice).placeOrder(
       this.btc.address,
       0,  // ask
       bigNum(30), // 30 USDC
-      50, // 50 BTC 
-      {from: owner.address}
+      bigNum(50) // 50 BTC 
     );
 
+    btcBalance = btcBalance - await this.btc.balanceOf(this.alice.address);
     const orderCount = await this.orderbookContract.getOrderCount();
+    const contractBtcBalance = await this.btc.balanceOf(this.orderbookContract.address);
+
     assert.equal(BigInt(orderCount), 1);
+    assert.equal(BigInt(btcBalance), BigInt(50 * 10**18));
+    assert.equal(BigInt(contractBtcBalance), BigInt(50 * 10**18));
   })
 
-  it ('place new bid order with eth token should be success', async function () {
-    const [owner] = await ethers.getSigners();
+  it ('place new bid order with eth token from alice wallet should be success', async function () {
+    await this.usdc.connect(this.owner).approve(this.alice.address, bigNum(250000));
+    await this.usdc.connect(this.owner).transfer(this.alice.address, bigNum(500));
 
-    await this.orderbookContract.placeOrder(
+    let balance = await this.usdc.balanceOf(this.alice.address);
+
+    await this.orderbookContract.connect(this.alice).placeOrder(
       this.eth.address,
       1,  // bid
       bigNum(10), // 10 USDC
-      50, // 50 ETH
-      {from: owner.address}
+      bigNum(50) // 50 ETH
+    );
+
+    balance = balance - await this.usdc.balanceOf(this.alice.address);
+    const orderCount = await this.orderbookContract.getOrderCount();
+    const contractBtcBalance = await this.usdc.balanceOf(this.orderbookContract.address);
+
+    assert.equal(BigInt(orderCount), 2);
+    assert.equal(BigInt(balance), bigNum(500));
+    assert.equal(BigInt(contractBtcBalance), bigNum(500));
+  })
+
+  it ('place new bid order that matches part of ask order', async function () {
+    const btcBalance = await this.btc.balanceOf(this.owner.address);
+    const usdcBalance = await this.usdc.balanceOf(this.alice.address);
+    const ownerUSDCBalance = await this.usdc.balanceOf(this.owner.address);
+    const originAmount = (await this.orderbookContract.getOrderByID(0)).amount;
+
+    await this.orderbookContract.connect(this.owner).placeOrder(
+      this.btc.address,
+      1,  // bid
+      bigNum(31), // 31 USDC
+      bigNum(30) // 30 BTC
+    );
+
+    const newBtcBalance = await this.btc.balanceOf(this.owner.address);
+    const newOwnerUSDCBalance = await this.usdc.balanceOf(this.owner.address);
+    let receivedBalance = smallNum(newBtcBalance) - smallNum(btcBalance);
+    let transferedBalance = smallNum(ownerUSDCBalance) - smallNum(newOwnerUSDCBalance);
+    assert.equal(receivedBalance, 30);
+    assert.equal(transferedBalance, 930);
+
+    const newUSDCBalance = await this.usdc.balanceOf(this.alice.address);
+    receivedBalance = smallNum(newUSDCBalance) - smallNum(usdcBalance);
+    assert.equal(receivedBalance, 900);
+
+    const orderCount = await this.orderbookContract.getOrderCount();
+    assert.equal(orderCount, 2);
+
+    const newAmount = (await this.orderbookContract.getOrderByID(0)).amount;
+    const matchedAmount = smallNum(originAmount) - smallNum(newAmount);
+    assert.equal(matchedAmount, 30);
+  })
+  
+  it ('place new bid order that matches ask order', async function () {
+
+    const btcBalance = await this.btc.balanceOf(this.owner.address);
+    const usdcBalance = await this.usdc.balanceOf(this.alice.address);
+    const ownerUSDCBalance = await this.usdc.balanceOf(this.owner.address);
+
+    await this.orderbookContract.placeOrder(
+      this.btc.address,
+      1,  // bid
+      bigNum(40), // 40 USDC
+      bigNum(25) // 20 BTC
+    );
+
+    const newOwnerUSDCBalance = await this.usdc.balanceOf(this.owner.address);
+    const newBtcBalance = await this.btc.balanceOf(this.owner.address);
+    let receivedBalance = smallNum(newBtcBalance) - smallNum(btcBalance);
+    const transferedBalance = smallNum(ownerUSDCBalance) - smallNum(newOwnerUSDCBalance);
+    assert.equal(receivedBalance, 20);
+    assert.equal(transferedBalance, 1000);
+
+    const newUSDCBalance = await this.usdc.balanceOf(this.alice.address);
+    receivedBalance = smallNum(newUSDCBalance) - smallNum(usdcBalance);
+    assert.equal(receivedBalance, 600);
+
+    const orderCount = await this.orderbookContract.getOrderCount();
+    assert.equal(orderCount, 3);
+
+    const firstOrder = await this.orderbookContract.getOrderByID(0);
+    assert.equal(smallNum(firstOrder.amount), 0);
+    assert.equal(firstOrder.status, 2);
+
+    const newOrder = await this.orderbookContract.getOrderByID(2);
+    assert.equal(smallNum(newOrder.amount), 5);
+    assert.equal(smallNum(newOrder.price), 40);
+
+    const orders = await this.orderbookContract.getAllOrders();
+    assert.equal(orders[0].orderID, 0);
+    assert.equal(orders[1].orderID, 1);
+    assert.equal(orders[2].orderID, 2);
+  })
+
+  it ('place new ask order without enough balance should be fail.', async function () {
+    await expect(this.orderbookContract.connect(this.empty).placeOrder(
+      this.btc.address,
+      0,  // ask
+      bigNum(30), // 30 USDC
+      bigNum(50) // 50 BTC 
+    )).to.be.revertedWith("");
+  })
+
+  it ('place new bid order with wrong bid type should be fail', async function () {
+    await expect(this.orderbookContract.connect(this.empty).placeOrder(
+      this.btc.address,
+      2,  // bid
+      bigNum(30), // 30 USDC
+      bigNum(50) // 50 BTC 
+    )).to.be.revertedWith("orderbook: unknown type.");
+  })
+
+  it ('close order that already excuted', async function () {
+    let orders = await this.orderbookContract.getAllOrders();
+    const originBalance = await this.btc.balanceOf(this.alice.address);
+
+    await this.orderbookContract.connect(this.alice).close(orders[0].orderID);
+    orders = await this.orderbookContract.getAllOrders();
+    assert.equal(orders[0].orderID, 1);
+    assert.equal(orders[1].orderID, 2);
+
+    const newBalance = await this.btc.balanceOf(this.alice.address);
+    assert.equal(smallNum(newBalance) - smallNum(originBalance), 0);
+  })
+
+  it ('add new ask order should be success', async function () {
+    await this.eth.connect(this.owner).approve(this.alice.address, bigNum(250000));
+    await this.eth.connect(this.owner).transfer(this.alice.address, bigNum(500));
+
+    await this.orderbookContract.connect(this.alice).placeOrder(
+      this.eth.address,
+      0, // ask
+      bigNum(50), // 50 USDC
+      bigNum(10)  // 10 ETH
     );
 
     const orderCount = await this.orderbookContract.getOrderCount();
-  })  
+    assert.equal(orderCount, 3);
+
+    const orders = await this.orderbookContract.getAllOrders();
+    assert.equal(orders.length, 3);
+
+    assert.equal(orders[0].orderID, 1);
+    assert.equal(orders[1].orderID, 2);
+    assert.equal(orders[2].orderID, 3);
+  })
+
+  it ('close first order and check refund', async function () {
+    let orders = await this.orderbookContract.getAllOrders();
+    const originBalance = await this.usdc.balanceOf(this.alice.address);
+    await this.orderbookContract.connect(this.alice).close(orders[0].orderID);
+    const newBalance = await this.usdc.balanceOf(this.alice.address);
+    assert.equal(smallNum(newBalance) - smallNum(originBalance),500);
+
+    orders = await this.orderbookContract.getAllOrders();
+    assert.equal(orders.length, 2);
+
+    assert.equal(orders[0].orderID, 2);
+    assert.equal(orders[1].orderID, 3);
+  })
+
+  it ('update order and check refund', async function () {
+    // let orders = await this.orderbookContract.getAllOrders();
+    // console.log(orders);
+  })
+
+  it ('update order and check payment', async function () {
+    
+  })
+
+  it ('pause contract and check the function call', async function () {
+    
+  })
+
+  it ('withdraw all assets.', async function () {
+    
+  })
+
+  it ('copy data from old contract to new contract', async function () {
+
+  })
+
+  it ('check the new contract', async function () {
+
+  })
+
 });

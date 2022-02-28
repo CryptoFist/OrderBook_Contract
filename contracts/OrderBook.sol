@@ -53,8 +53,13 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
   /**
    * @notice constructor 
    */
-   constructor(address _baseToken) {
+   constructor(address _baseToken, address _devWallet) {
      baseToken = IERC20(_baseToken);
+     devWallet = _devWallet;
+   }
+
+   function setDevWallet(address _devWallet) external onlyOwner {
+     devWallet = _devWallet;
    }
 
    /**
@@ -77,7 +82,7 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
        emit PlaceSellOrder(msg.sender, _price, _amount, _tradeToken);
        _placeSellOrder(msg.sender, _tradeToken, _price, _amount);
      } else {
-       transferAndCheck(address(baseToken), msg.sender, address(this), _amount.mul(_price));
+       transferAndCheck(address(baseToken), msg.sender, address(this), _amount.mul(_price).div(10**18));
        emit PlaceBuyOrder(msg.sender, _price, _amount, _tradeToken);
        _placeBuyOrder(msg.sender, _tradeToken, _price, _amount);
      }
@@ -133,10 +138,10 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
    ) internal {
      // transfer proper tokens to two parties
      IERC20 tradeToken = IERC20(_tradeToken);
-     baseToken.safeApprove(address(this), _baseTokenAmount);
-     tradeToken.safeApprove(address(this), _tradeTokenAmount);
-     baseToken.safeApprove(_seller, _baseTokenAmount);
-     tradeToken.safeApprove(_buyer, _tradeTokenAmount);
+     baseToken.approve(address(this), _baseTokenAmount);
+     tradeToken.approve(address(this), _tradeTokenAmount);
+     baseToken.approve(_seller, _baseTokenAmount);
+     tradeToken.approve(_buyer, _tradeTokenAmount);
 
      // calc fee, take and maker
      uint256 buyerFee = 0;
@@ -165,15 +170,15 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
      uint256 devProfit = buyerFee.mul(devProfitPro).div(10**4);
      uint256 matcherProfit = buyerFee.sub(devProfit);
 
-     tradeToken.safeApprove(devWallet, devProfit);
-     tradeToken.safeApprove(address(this), devProfit);
+     tradeToken.approve(devWallet, devProfit);
+     tradeToken.approve(address(this), devProfit);
      tradeToken.safeTransferFrom(address(this), devWallet, devProfit);
 
      devProfit = sellerFee.mul(devProfitPro).div(10**4);
      matcherProfit = sellerFee.sub(devProfit);
 
-     baseToken.safeApprove(devWallet, devProfit);
-     baseToken.safeApprove(address(this), devProfit);
+     baseToken.approve(devWallet, devProfit);
+     baseToken.approve(address(this), devProfit);
      baseToken.safeTransferFrom(address(this), devWallet, devProfit);
      
    }
@@ -211,12 +216,13 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
                }
 
                uint256 matchAmount = askOrders[_tradeToken][sellPricePointer][i].amount;
+              //  console.log("matchAmount is ", matchAmount);
                matchOrder(
                 _maker,
                 askOrders[_tradeToken][sellPricePointer][i].maker, 
                 _tradeToken, 
                 matchAmount, 
-                matchAmount.mul(sellPricePointer),
+                matchAmount.mul(sellPricePointer).div(10**18),
                 sellPricePointer,
                 _price.sub(sellPricePointer),
                 ORDER_TYPE_BID
@@ -225,7 +231,7 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
 
                orderInfos[askOrders[_tradeToken][sellPricePointer][i].orderID].lastUpdatedAt = block.timestamp;
                orderInfos[askOrders[_tradeToken][sellPricePointer][i].orderID].status = ORDER_STATUS_EXECUTED;
-               orderInfos[askOrders[_tradeToken][sellPricePointer][i].orderID].amount = amountReflect;
+               orderInfos[askOrders[_tradeToken][sellPricePointer][i].orderID].amount = 0;
                askOrderCounts[_tradeToken][sellPricePointer] -= 1;
              }
            } else {
@@ -236,23 +242,25 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
                 askOrders[_tradeToken][sellPricePointer][i].maker, 
                 _tradeToken, 
                 amountReflect, 
-                amountReflect.mul(sellPricePointer),
+                amountReflect.mul(sellPricePointer).div(10**18),
                 sellPricePointer,
                 _price.sub(sellPricePointer),
                 ORDER_TYPE_BID
                );
+              uint256 restAmount = orderInfos[askOrders[_tradeToken][sellPricePointer][i].orderID].amount;
+              restAmount = restAmount.sub(amountReflect);
               amountReflect = 0;
 
               orderInfos[askOrders[_tradeToken][sellPricePointer][i].orderID].lastUpdatedAt = block.timestamp;
               orderInfos[askOrders[_tradeToken][sellPricePointer][i].orderID].status = ORDER_STATUS_PART_EXECUTED;
-              orderInfos[askOrders[_tradeToken][sellPricePointer][i].orderID].amount = amountReflect;
+              orderInfos[askOrders[_tradeToken][sellPricePointer][i].orderID].amount = restAmount;
            }
            i ++;
          }
          sellPricePointer = higherPrice;
        }
      }
-     checkAndAddAsset(address(baseToken), amountReflect.mul(_price));
+     checkAndAddAsset(address(baseToken), amountReflect.mul(_price).div(10**18));
      if (amountReflect > 0) {
        _drawToBuyBook(_price, amountReflect, _tradeToken, _maker);
      }
@@ -286,7 +294,7 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
                  _maker, 
                  _tradeToken, 
                  matchAmount, 
-                 matchAmount.mul(buyPricePointer),
+                 matchAmount.mul(buyPricePointer).div(10**18),
                  buyPricePointer,
                 _price.sub(buyPricePointer),
                 ORDER_TYPE_ASK
@@ -306,7 +314,7 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
                 _maker, 
                 _tradeToken, 
                 amountReflect, 
-                amountReflect.mul(buyPricePointer),
+                amountReflect.mul(buyPricePointer).div(10**18),
                 buyPricePointer,
                 _price.sub(buyPricePointer),
                 ORDER_TYPE_ASK
@@ -351,7 +359,8 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
           0,
           curTime,
           ORDER_STATUS_OPEN,
-          curTime
+          curTime,
+          orderID
         );
 
         bidOrders[_tradeToken][_price][bidOrderCounts[_tradeToken][_price]] = Order(
@@ -418,7 +427,8 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
         0,
         curTime,
         ORDER_STATUS_OPEN,
-        curTime
+        curTime,
+        orderID
       );
 
       askOrders[_tradeToken][_price][bidOrderCounts[_tradeToken][_price]] = Order(
@@ -478,13 +488,21 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
 
    function getAllOrders() external view returns (OrderInfo[] memory) {
      uint256 i = 0;
+     uint256 index = 0;
      OrderInfo[] memory response = new OrderInfo[](orderCount);
 
-     for (i = 0; i < orderCount; i ++) {
-       response[i] = orderInfos[i];
+     for (i = 0; i < orderID; i ++) {
+       if (orderInfos[i].maker != address(0) && orderInfos[i].status != ORDER_STATUS_CLOSED) {
+         response[index ++] = orderInfos[i];
+       }
      }
 
      return response;
+   }
+
+   function getOrderByID(uint256 _orderID) external view returns (OrderInfo memory) {
+     require (orderInfos[_orderID].status != ORDER_STATUS_CLOSED, "orderbook: this order is closed.");
+     return orderInfos[_orderID];
    }
 
    function withDrawAll() external whenPaused onlyOwner {
@@ -493,11 +511,15 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
        address tokenAddress = assetList[i];
        IERC20 token = IERC20(tokenAddress);
        uint256 amount = assetInfos[tokenAddress].amount;
-       token.safeApprove(address(this), amount);
-       token.safeApprove(owner(), amount);
+       token.approve(address(this), amount);
+       token.approve(owner(), amount);
 
        token.safeTransferFrom(address(this), owner(), amount);
      }
+   }
+
+   function getCurOrderID() external view returns(uint256) {
+     return orderID;
    }
 
    function close(uint256 _orderID) public {
@@ -508,15 +530,37 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
    }
 
    function deleteOrder(uint256 _orderID) internal {
-     orderInfos[_orderID].status = ORDER_STATUS_CLOSED;
      address tokenAddress = orderInfos[_orderID].tradeTokenAddress;
      uint256 price = orderInfos[_orderID].price;
-     if (orderInfos[_orderID].orderType == ORDER_TYPE_ASK) {
+     uint256 restAmount = orderInfos[_orderID].amount;
+     uint8 orderType = orderInfos[_orderID].orderType;
+     uint8 status = orderInfos[_orderID].status;
+
+     if (status == ORDER_STATUS_EXECUTED) {
+       orderInfos[_orderID].status = ORDER_STATUS_CLOSED;
+       orderCount --;
+       return;
+     }
+
+
+     if (orderType == ORDER_TYPE_ASK) {
+       if (restAmount > 0) {
+        // refund
+        address makerAddress = orderInfos[_orderID].maker;
+        IERC20 tradeToken = IERC20(tokenAddress);
+        tradeToken.approve(address(this), restAmount);
+        tradeToken.approve(makerAddress, restAmount);
+        transferAndCheck(tokenAddress, address(this), makerAddress, restAmount);
+       }
+
        uint256 cnt = askOrderCounts[tokenAddress][price];
        uint i = 0;
        for (i = 0; i < cnt; i ++) {
          if (askOrders[tokenAddress][price][i].orderID == _orderID) {
            delete askOrders[tokenAddress][price][i];
+           orderCount --;
+           orderInfos[_orderID].status = ORDER_STATUS_CLOSED;
+           orderInfos[_orderID].amount = 0;
            askOrderCounts[tokenAddress][price] = cnt.sub(1);
            uint256 higher = askOrderPrices[tokenAddress][price].higherPrice;
            uint256 lower = askOrderPrices[tokenAddress][price].lowerPrice;
@@ -547,11 +591,22 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
          }
        }
      } else {
+       if (restAmount > 0) {
+        // refund
+        address makerAddress = orderInfos[_orderID].maker;
+        uint256 baseTokenAmount = restAmount.mul(price).div(10**18);
+        baseToken.approve(address(this), baseTokenAmount);
+        baseToken.approve(makerAddress, baseTokenAmount);
+        transferAndCheck(address(baseToken), address(this), makerAddress, baseTokenAmount);
+       }
        uint i = 0;
        uint256 cnt = bidOrderCounts[tokenAddress][price];
        for (i = 0; i < cnt; i ++) {
          if (bidOrders[tokenAddress][price][i].orderID == _orderID) {
            delete bidOrders[tokenAddress][price][i];
+           orderCount --;
+           orderInfos[_orderID].status = ORDER_STATUS_CLOSED;
+           orderInfos[_orderID].amount = 0;
            bidOrderCounts[tokenAddress][price] = cnt.sub(1);
            uint256 higher = bidOrderPrices[tokenAddress][price].higherPrice;
            uint256 lower = bidOrderPrices[tokenAddress][price].lowerPrice;
@@ -596,8 +651,8 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
          // refund
          uint256 refundAmount = (orderInfo.amount).sub(_amount);
          IERC20 tradeToken = IERC20(orderInfo.tradeTokenAddress);
-         tradeToken.safeApprove(address(this), refundAmount);
-         tradeToken.safeApprove(msg.sender, refundAmount);
+         tradeToken.approve(address(this), refundAmount);
+         tradeToken.approve(msg.sender, refundAmount);
          tradeToken.safeTransferFrom(address(this), msg.sender, refundAmount);
        } else {
          transferAndCheck(orderInfo.tradeTokenAddress, msg.sender, address(this), _amount.sub(orderInfo.amount));
@@ -610,8 +665,9 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
        if (originAmount > newAmount) {
         // refund
         uint256 refundAmount = originAmount.sub(newAmount);
-        baseToken.safeApprove(address(this), refundAmount);
-        baseToken.safeApprove(msg.sender, refundAmount);
+        refundAmount = refundAmount.div(10**18);
+        baseToken.approve(address(this), refundAmount);
+        baseToken.approve(msg.sender, refundAmount);
         baseToken.safeTransferFrom(address(this), msg.sender, refundAmount);
        } else {
         transferAndCheck(address(baseToken), msg.sender, address(this), newAmount.sub(originAmount));

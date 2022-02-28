@@ -16,6 +16,7 @@ interface IOrderBook {
     uint256 createdAt;
     uint8 status;
     uint256 lastUpdatedAt;
+    uint256 orderID;
   }
 
   struct Order {
