@@ -98,11 +98,11 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
      require (_amount > 0, "orderbook: amount should be greater than zero.");
 
      if (_orderType == ORDER_TYPE_ASK) {
-       transferAndCheck(_tradeToken, msg.sender, address(this), _amount);
+       _amount = transferAndCheck(_tradeToken, msg.sender, address(this), _amount);
        emit PlaceSellOrder(msg.sender, _price, _amount, _tradeToken);
        _placeSellOrder(msg.sender, _tradeToken, _price, _amount);
      } else {
-       transferAndCheck(address(baseToken), msg.sender, address(this), _amount.mul(_price).div(10**18));
+       _amount = transferAndCheck(address(baseToken), msg.sender, address(this), _amount.mul(_price).div(10**18));
        emit PlaceBuyOrder(msg.sender, _price, _amount, _tradeToken);
        _placeBuyOrder(msg.sender, _tradeToken, _price, _amount);
      }
@@ -113,9 +113,11 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
      address _from,
      address _to,
      uint256 _value
-   ) internal {
+   ) internal returns(uint256 transferedAmount) {
      IERC20 token = IERC20(_tokenAddress);
+     uint256 originBalance = token.balanceOf(_to);
      token.safeTransferFrom(_from, _to, _value);
+     transferedAmount = token.balanceOf(_to).sub(originBalance);
    }
 
    function getSplitProfit(uint256 _profitAmount) internal view returns (uint16 devProfit, uint16 matcherProfit) {
@@ -158,8 +160,8 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
    ) internal {
      // transfer proper tokens to two parties
      IERC20 tradeToken = IERC20(_tradeToken);
-     baseToken.approve(address(this), _baseTokenAmount);
-     tradeToken.approve(address(this), _tradeTokenAmount);
+    //  baseToken.approve(address(this), _baseTokenAmount);
+    //  tradeToken.approve(address(this), _tradeTokenAmount);
      baseToken.approve(_seller, _baseTokenAmount);
      tradeToken.approve(_buyer, _tradeTokenAmount);
 
@@ -179,8 +181,10 @@ contract OrderBook is ReentrancyGuard, Pausable, Ownable, IOrderBook {
      _tradeTokenAmount = _tradeTokenAmount.sub(buyerFee);
      _baseTokenAmount = _baseTokenAmount.sub(sellerFee);
 
-     baseToken.safeTransferFrom(address(this), _seller, _baseTokenAmount);
-     tradeToken.safeTransferFrom(address(this), _buyer, _tradeTokenAmount);
+    //  baseToken.safeTransferFrom(address(this), _seller, _baseTokenAmount);
+    //  tradeToken.safeTransferFrom(address(this), _buyer, _tradeTokenAmount);
+     baseToken.transferFrom(address(this), _seller, _baseTokenAmount);
+     tradeToken.transferFrom(address(this), _buyer, _tradeTokenAmount);
 
      // split profit to dev and match maker
      uint256 devProfitPro;
